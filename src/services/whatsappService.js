@@ -618,7 +618,15 @@ class WhatsAppService {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        this.qrCodeDataUrl = await qrcode.toDataURL(qr);
+        this.qrCodeDataUrl = await qrcode.toDataURL(qr, {
+          errorCorrectionLevel: 'H',
+          margin: 2,
+          scale: 8,
+          color: {
+            dark: '#111111',
+            light: '#FFFFFF',
+          },
+        });
         this.lastStatus = 'Scan QR from dashboard';
         this.ready = false;
         this.isInitializing = false;
@@ -1331,6 +1339,16 @@ class WhatsAppService {
       };
     }).filter(Boolean);
     const usageButtons = buildUsageInteractiveButtons(normalizedButtons, scheduleShareUrl);
+    if (!usageButtons.length) {
+      usageButtons.push({
+        name: 'cta_url',
+        buttonParamsJson: JSON.stringify({
+          display_text: 'Schedule Web',
+          url: scheduleShareUrl,
+          merchant_url: scheduleShareUrl,
+        }),
+      });
+    }
 
     const sendUsageHelp = async (text) => {
       if (!usageButtons.length) {

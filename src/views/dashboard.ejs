@@ -12,9 +12,9 @@
       (function () {
         try {
           var storedTheme = window.localStorage.getItem('schedulebot-theme');
-          document.documentElement.setAttribute('data-theme', storedTheme === 'light' ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', storedTheme === 'dark' ? 'dark' : 'light');
         } catch (error) {
-          document.documentElement.setAttribute('data-theme', 'dark');
+          document.documentElement.setAttribute('data-theme', 'light');
         }
       })();
 
@@ -70,6 +70,15 @@
               </svg>
               <span>Custom Command</span>
             </a>
+            <a class="nav-item" href="#vending-mechine">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="8" height="8" rx="1.5"></rect>
+                <rect x="13" y="3" width="8" height="8" rx="1.5"></rect>
+                <rect x="3" y="13" width="8" height="8" rx="1.5"></rect>
+                <rect x="13" y="13" width="8" height="8" rx="1.5"></rect>
+              </svg>
+              <span>Vending Mechine</span>
+            </a>
             <a class="nav-item" href="#deleted-messages">
               <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polyline points="3 6 5 6 21 6"></polyline>
@@ -78,6 +87,16 @@
                 <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
               </svg>
               <span>Deleted Messages</span>
+            </a>
+            <a class="nav-item" href="#route-list">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="6" cy="6" r="2"></circle>
+                <circle cx="18" cy="6" r="2"></circle>
+                <circle cx="6" cy="18" r="2"></circle>
+                <circle cx="18" cy="18" r="2"></circle>
+                <path d="M8 6h8M6 8v8M18 8v8M8 18h8"></path>
+              </svg>
+              <span>Route List</span>
             </a>
           </nav>
         </div>
@@ -402,6 +421,11 @@
                           <li>Tap <strong>Link a Device</strong>.</li>
                           <li>Scan the QR code above using your phone camera.</li>
                         </ol>
+                        <div class="qr-actions" id="wa-qr-actions" <%= waState.ready ? 'hidden' : '' %>>
+                          <button type="button" class="btn btn-outline btn-sm" id="refreshQrBtn">Refresh QR</button>
+                          <p id="waQrCountdown" class="qr-countdown" hidden></p>
+                          <p id="waQrMeta" class="qr-meta"><%= waState.qrCodeDataUrl ? 'QR ready to scan.' : 'Waiting for QR from WhatsApp...' %></p>
+                        </div>
                       </div>
                       <p id="wa-qr-empty" class="muted" <%= !waState.ready && !waState.qrCodeDataUrl ? '' : 'hidden' %>>
                         QR will appear automatically when re-login is needed.
@@ -1085,6 +1109,171 @@
             </div>
           </section>
 
+          <section class="page" data-page="vending-mechine" id="vending-mechine" hidden>
+            <article class="card vending-mechine-shell">
+              <div class="card-header section-head">
+                <div>
+                  <h2 class="card-title">Vending Mechine</h2>
+                  <p class="card-description">Edit mode overview adapted from Huyge/app/edit.</p>
+                </div>
+                <span class="badge badge-outline">Overview</span>
+              </div>
+              <div class="card-content vending-mechine-content">
+                <div class="vending-overview-grid">
+                  <a class="vending-overview-card" href="#vending-mechine-machines">
+                    <div class="vending-overview-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="5" y="2" width="14" height="20" rx="2"></rect>
+                        <path d="M9 6h6M9 10h6M9 14h2"></path>
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="vending-overview-title">Route</p>
+                      <p class="vending-overview-description">Add, edit, or remove vending machines and their locations.</p>
+                    </div>
+                  </a>
+
+                  <a class="vending-overview-card" href="#vending-mechine-machine-products">
+                    <div class="vending-overview-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="8" height="8" rx="1.5"></rect>
+                        <rect x="13" y="3" width="8" height="8" rx="1.5"></rect>
+                        <rect x="3" y="13" width="8" height="8" rx="1.5"></rect>
+                        <rect x="13" y="13" width="8" height="8" rx="1.5"></rect>
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="vending-overview-title">Route Location</p>
+                      <p class="vending-overview-description">Assign products to machine slots and set max capacity.</p>
+                    </div>
+                  </a>
+
+                  <a class="vending-overview-card" href="#vending-mechine-product-master">
+                    <div class="vending-overview-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M20 7H4a1 1 0 0 0-1 1v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8a1 1 0 0 0-1-1Z"></path>
+                        <path d="M16 11a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z"></path>
+                        <path d="M8 11h.01"></path>
+                      </svg>
+                    </div>
+                    <div>
+                      <p class="vending-overview-title">Location</p>
+                      <p class="vending-overview-description">Manage the product catalogue, including names and images.</p>
+                    </div>
+                  </a>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section class="page" data-page="vending-mechine-machines" id="vending-mechine-machines" hidden>
+            <article class="card vending-detail-shell">
+              <div class="card-header section-head">
+                <div>
+                  <h2 class="card-title">Route</h2>
+                  <p class="card-description">Create and manage route master data.</p>
+                </div>
+                <a class="btn btn-outline btn-sm" href="#vending-mechine">Back to Overview</a>
+              </div>
+              <div class="card-content">
+                <div class="vending-crud-actions">
+                  <button type="button" class="btn btn-primary btn-sm" id="vendingRouteAddRowBtn">Add Route</button>
+                </div>
+                <p class="feedback" id="vendingRouteFeedback"></p>
+
+                <div class="table-wrap route-list-table-wrap">
+                  <table class="route-list-table">
+                    <thead>
+                      <tr>
+                        <th>No</th>
+                        <th>ID</th>
+                        <th>Code</th>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="vendingRouteTableBody">
+                      <tr><td colspan="6" class="muted">No route yet</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section class="page" data-page="vending-mechine-machine-products" id="vending-mechine-machine-products" hidden>
+            <article class="card vending-detail-shell">
+              <div class="card-header section-head">
+                <div>
+                  <h2 class="card-title">Route Location</h2>
+                  <p class="card-description">Map route to location with sequence and status.</p>
+                </div>
+                <a class="btn btn-outline btn-sm" href="#vending-mechine">Back to Overview</a>
+              </div>
+              <div class="card-content">
+                <div class="vending-crud-actions">
+                  <button type="button" class="btn btn-primary btn-sm" id="vendingRouteLocationAddRowBtn">Add Mapping</button>
+                </div>
+                <p class="feedback" id="vendingRouteLocationFeedback"></p>
+
+                <div class="table-wrap route-list-table-wrap">
+                  <table class="route-list-table">
+                    <thead>
+                      <tr>
+                        <th>No</th>
+                        <th>ID</th>
+                        <th>Route ID</th>
+                        <th>Location ID</th>
+                        <th>Sequence</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="vendingRouteLocationTableBody">
+                      <tr><td colspan="7" class="muted">No mapping yet</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section class="page" data-page="vending-mechine-product-master" id="vending-mechine-product-master" hidden>
+            <article class="card vending-detail-shell">
+              <div class="card-header section-head">
+                <div>
+                  <h2 class="card-title">Location</h2>
+                  <p class="card-description">Create and manage location master data.</p>
+                </div>
+                <a class="btn btn-outline btn-sm" href="#vending-mechine">Back to Overview</a>
+              </div>
+              <div class="card-content">
+                <div class="vending-crud-actions">
+                  <button type="button" class="btn btn-primary btn-sm" id="vendingLocationAddRowBtn">Add Location</button>
+                </div>
+                <p class="feedback" id="vendingLocationFeedback"></p>
+
+                <div class="table-wrap route-list-table-wrap">
+                  <table class="route-list-table">
+                    <thead>
+                      <tr>
+                        <th>No</th>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Delivery</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="vendingLocationTableBody">
+                      <tr><td colspan="5" class="muted">No location yet</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
+          </section>
+
           <section class="page" data-page="deleted-messages" id="deleted-messages" hidden>
             <article class="card table-card">
               <div class="card-header section-head">
@@ -1140,6 +1329,146 @@
                         </td>
                       </tr>
                       <% }) %>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section class="page" data-page="route-list" id="route-list" hidden>
+            <article class="card route-list-shell">
+              <div class="card-header section-head">
+                <div>
+                  <h2 class="card-title">Route List</h2>
+                  <p class="card-description">Overview mode with inline edit mode for route visibility and status.</p>
+                </div>
+                <button type="button" class="btn btn-outline btn-sm" id="routeListEditModeBtn">Enter Edit Mode</button>
+              </div>
+
+              <div class="card-content route-list-content">
+                <div class="route-list-overview-grid" id="routeListOverviewGrid">
+                  <article class="route-overview-card">
+                    <p class="route-overview-label">Total Routes</p>
+                    <p class="route-overview-value" id="routeListTotalCount">0</p>
+                  </article>
+                  <article class="route-overview-card">
+                    <p class="route-overview-label">Visible Routes</p>
+                    <p class="route-overview-value" id="routeListVisibleCount">0</p>
+                  </article>
+                  <article class="route-overview-card">
+                    <p class="route-overview-label">Public Routes</p>
+                    <p class="route-overview-value" id="routeListPublicCount">0</p>
+                  </article>
+                  <article class="route-overview-card">
+                    <p class="route-overview-label">Enabled Routes</p>
+                    <p class="route-overview-value" id="routeListEnabledCount">0</p>
+                  </article>
+                </div>
+
+                <div class="route-list-toolbar">
+                  <div class="route-list-field">
+                    <label for="routeListSearchInput">Search</label>
+                    <input id="routeListSearchInput" type="search" placeholder="Search by path, method, or purpose" />
+                  </div>
+                  <div class="route-list-field route-list-field-sm">
+                    <label for="routeListMethodFilter">Method</label>
+                    <select id="routeListMethodFilter">
+                      <option value="all">All</option>
+                      <option value="GET">GET</option>
+                      <option value="POST">POST</option>
+                      <option value="PUT">PUT</option>
+                      <option value="DELETE">DELETE</option>
+                    </select>
+                  </div>
+                </div>
+
+                <p class="route-list-edit-hint" id="routeListEditHint">Overview mode active. Click Enter Edit Mode to modify visibility and enabled flags.</p>
+
+                <div class="table-wrap route-list-table-wrap">
+                  <table class="route-list-table">
+                    <thead>
+                      <tr>
+                        <th>Method</th>
+                        <th>Path</th>
+                        <th>Purpose</th>
+                        <th>Visibility</th>
+                        <th>Enabled</th>
+                      </tr>
+                    </thead>
+                    <tbody id="routeListTableBody">
+                      <tr data-route-row data-method="GET" data-search="GET / dashboard home" >
+                        <td><span class="badge badge-outline">GET</span></td>
+                        <td class="route-path">/</td>
+                        <td>Dashboard home</td>
+                        <td>
+                          <select class="route-visibility-select" data-route-visibility disabled>
+                            <option value="public" selected>Public</option>
+                            <option value="internal">Internal</option>
+                          </select>
+                        </td>
+                        <td><label class="switch"><input type="checkbox" data-route-enabled checked disabled /><span class="switch-slider" aria-hidden="true"></span></label></td>
+                      </tr>
+                      <tr data-route-row data-method="GET" data-search="GET /schedule/create public schedule form" >
+                        <td><span class="badge badge-outline">GET</span></td>
+                        <td class="route-path">/schedule/create</td>
+                        <td>Public schedule form</td>
+                        <td>
+                          <select class="route-visibility-select" data-route-visibility disabled>
+                            <option value="public" selected>Public</option>
+                            <option value="internal">Internal</option>
+                          </select>
+                        </td>
+                        <td><label class="switch"><input type="checkbox" data-route-enabled checked disabled /><span class="switch-slider" aria-hidden="true"></span></label></td>
+                      </tr>
+                      <tr data-route-row data-method="GET" data-search="GET /api/whatsapp/state whatsapp state" >
+                        <td><span class="badge badge-outline">GET</span></td>
+                        <td class="route-path">/api/whatsapp/state</td>
+                        <td>WhatsApp connection state</td>
+                        <td>
+                          <select class="route-visibility-select" data-route-visibility disabled>
+                            <option value="public" selected>Public</option>
+                            <option value="internal">Internal</option>
+                          </select>
+                        </td>
+                        <td><label class="switch"><input type="checkbox" data-route-enabled checked disabled /><span class="switch-slider" aria-hidden="true"></span></label></td>
+                      </tr>
+                      <tr data-route-row data-method="POST" data-search="POST /api/schedules create schedule" >
+                        <td><span class="badge badge-outline">POST</span></td>
+                        <td class="route-path">/api/schedules</td>
+                        <td>Create a schedule item</td>
+                        <td>
+                          <select class="route-visibility-select" data-route-visibility disabled>
+                            <option value="public" selected>Public</option>
+                            <option value="internal">Internal</option>
+                          </select>
+                        </td>
+                        <td><label class="switch"><input type="checkbox" data-route-enabled checked disabled /><span class="switch-slider" aria-hidden="true"></span></label></td>
+                      </tr>
+                      <tr data-route-row data-method="POST" data-search="POST /api/messages/send send message" >
+                        <td><span class="badge badge-outline">POST</span></td>
+                        <td class="route-path">/api/messages/send</td>
+                        <td>Send message instantly</td>
+                        <td>
+                          <select class="route-visibility-select" data-route-visibility disabled>
+                            <option value="public" selected>Public</option>
+                            <option value="internal">Internal</option>
+                          </select>
+                        </td>
+                        <td><label class="switch"><input type="checkbox" data-route-enabled checked disabled /><span class="switch-slider" aria-hidden="true"></span></label></td>
+                      </tr>
+                      <tr data-route-row data-method="DELETE" data-search="DELETE /api/deleted-messages clear deleted records" >
+                        <td><span class="badge badge-outline">DELETE</span></td>
+                        <td class="route-path">/api/deleted-messages</td>
+                        <td>Clear all deleted records</td>
+                        <td>
+                          <select class="route-visibility-select" data-route-visibility disabled>
+                            <option value="public" selected>Public</option>
+                            <option value="internal">Internal</option>
+                          </select>
+                        </td>
+                        <td><label class="switch"><input type="checkbox" data-route-enabled checked disabled /><span class="switch-slider" aria-hidden="true"></span></label></td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>

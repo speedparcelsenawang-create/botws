@@ -46,6 +46,10 @@ const waQrCaption = document.getElementById('wa-qr-caption');
 const waQrImage = waQrWrap ? waQrWrap.querySelector('img.qr') : null;
 const waQrInstructions = document.getElementById('wa-qr-instructions');
 const waQrConnectedBanner = document.getElementById('wa-qr-connected-banner');
+const waQrActions = document.getElementById('wa-qr-actions');
+const refreshQrBtn = document.getElementById('refreshQrBtn');
+const waQrMeta = document.getElementById('waQrMeta');
+const waQrCountdown = document.getElementById('waQrCountdown');
 const methodTabQr = document.getElementById('methodTabQr');
 const methodTabPhone = document.getElementById('methodTabPhone');
 const qrMethodPanel = document.getElementById('qr-method');
@@ -160,6 +164,26 @@ const breadcrumbRoot = document.getElementById('breadcrumbRoot');
 const breadcrumbPage = document.getElementById('breadcrumbPage');
 const breadcrumbSectionSep = document.getElementById('breadcrumbSectionSep');
 const breadcrumbSection = document.getElementById('breadcrumbSection');
+const routeListEditModeBtn = document.getElementById('routeListEditModeBtn');
+const routeListSearchInput = document.getElementById('routeListSearchInput');
+const routeListMethodFilter = document.getElementById('routeListMethodFilter');
+const routeListEditHint = document.getElementById('routeListEditHint');
+const routeListTableBody = document.getElementById('routeListTableBody');
+const routeListTotalCount = document.getElementById('routeListTotalCount');
+const routeListVisibleCount = document.getElementById('routeListVisibleCount');
+const routeListPublicCount = document.getElementById('routeListPublicCount');
+const routeListEnabledCount = document.getElementById('routeListEnabledCount');
+const vendingRouteAddRowBtn = document.getElementById('vendingRouteAddRowBtn');
+const vendingRouteFeedback = document.getElementById('vendingRouteFeedback');
+const vendingRouteTableBody = document.getElementById('vendingRouteTableBody');
+const vendingLocationAddRowBtn = document.getElementById('vendingLocationAddRowBtn');
+const vendingLocationFeedback = document.getElementById('vendingLocationFeedback');
+const vendingLocationTableBody = document.getElementById('vendingLocationTableBody');
+const vendingRouteLocationRouteIdInput = document.getElementById('vendingRouteLocationRouteId');
+const vendingRouteLocationLocationIdInput = document.getElementById('vendingRouteLocationLocationId');
+const vendingRouteLocationAddRowBtn = document.getElementById('vendingRouteLocationAddRowBtn');
+const vendingRouteLocationFeedback = document.getElementById('vendingRouteLocationFeedback');
+const vendingRouteLocationTableBody = document.getElementById('vendingRouteLocationTableBody');
 const navItems = Array.from(document.querySelectorAll('.sidebar-nav .nav-item, .sidebar-footer .nav-item'));
 const pages = Array.from(document.querySelectorAll('.page[data-page]'));
 const DEFAULT_PAGE_HASH = '#profile';
@@ -205,6 +229,13 @@ let accessControlSettings = normalizeAccessControlSettings(window.__ACCESS_CONTR
 let builtInCommandSettings = normalizeBuiltInCommandSettings(window.__BUILT_IN_COMMAND_SETTINGS__ || {});
 let latestConnectedAbout = '';
 let latestConnectedAvatarUrl = String(profileHomeAvatarImage?.getAttribute('src') || '').trim();
+let lastRenderedQrCodeDataUrl = '';
+let lastQrUpdatedAt = 0;
+let qrMetaIntervalRef = null;
+let isRefreshingQr = false;
+let lastQrAutoRefreshAt = 0;
+const QR_ESTIMATED_TTL_SECONDS = 20;
+const QR_AUTO_REFRESH_COOLDOWN_MS = 8000;
 
 const PAGE_TITLE_MAP = {
   profile: 'Profile',
@@ -212,8 +243,24 @@ const PAGE_TITLE_MAP = {
   schedule: 'Schedule',
   'send-message': 'Send Message',
   'custom-commands': 'Custom Command',
+  'vending-mechine': 'Vending Mechine',
+  'vending-mechine-machines': 'Vending Mechine / Route',
+  'vending-mechine-machine-products': 'Vending Mechine / Route Location',
+  'vending-mechine-product-master': 'Vending Mechine / Location',
   'deleted-messages': 'Deleted Messages',
+  'route-list': 'Route List',
 };
+
+let isRouteListEditMode = false;
+let vendingRoutes = [];
+let vendingLocations = [];
+let vendingRouteLocations = [];
+let vendingRouteInlineMode = 'none';
+let vendingRouteInlineEditId = '';
+let vendingLocationInlineMode = 'none';
+let vendingLocationInlineEditId = '';
+let vendingRouteLocationInlineMode = 'none';
+let vendingRouteLocationInlineEditId = '';
 
 function getActivePageKey() {
   const activePage = pages.find((page) => !page.hidden);
@@ -290,6 +337,390 @@ function updateTopBreadcrumb() {
   }
 }
 
+function getRouteRows() {
+  if (!routeListTableBody) return [];
+  return Array.from(routeListTableBody.querySelectorAll('[data-route-row]'));
+}
+
+function updateRouteListOverview() {
+  const rows = getRouteRows();
+  const visibleRows = rows.filter((row) => !row.hidden);
+
+  const publicCount = rows.filter((row) => {
+    const select = row.querySelector('[data-route-visibility]');
+    return String(select?.value || '') === 'public';
+  }).length;
+
+  const enabledCount = rows.filter((row) => {
+    const toggle = row.querySelector('[data-route-enabled]');
+    return Boolean(toggle?.checked);
+  }).length;
+
+  if (routeListTotalCount) routeListTotalCount.textContent = String(rows.length);
+  if (routeListVisibleCount) routeListVisibleCount.textContent = String(visibleRows.length);
+  if (routeListPublicCount) routeListPublicCount.textContent = String(publicCount);
+  if (routeListEnabledCount) routeListEnabledCount.textContent = String(enabledCount);
+}
+
+function applyRouteListFilters() {
+  const rows = getRouteRows();
+  if (!rows.length) return;
+
+  const query = String(routeListSearchInput?.value || '').trim().toLowerCase();
+  const methodFilter = String(routeListMethodFilter?.value || 'all').trim().toUpperCase();
+
+  rows.forEach((row) => {
+    const method = String(row.dataset.method || '').trim().toUpperCase();
+    const searchableText = String(row.dataset.search || row.textContent || '').toLowerCase();
+
+    const methodMatch = methodFilter === 'ALL' || method === methodFilter;
+    const queryMatch = !query || searchableText.includes(query);
+    row.hidden = !(methodMatch && queryMatch);
+  });
+
+  updateRouteListOverview();
+}
+
+function setRouteListEditMode(isEditMode) {
+  isRouteListEditMode = Boolean(isEditMode);
+  const rows = getRouteRows();
+
+  rows.forEach((row) => {
+    const visibilitySelect = row.querySelector('[data-route-visibility]');
+    const enabledToggle = row.querySelector('[data-route-enabled]');
+    if (visibilitySelect) visibilitySelect.disabled = !isRouteListEditMode;
+    if (enabledToggle) enabledToggle.disabled = !isRouteListEditMode;
+    row.classList.toggle('is-editing', isRouteListEditMode);
+  });
+
+  if (routeListEditModeBtn) {
+    routeListEditModeBtn.textContent = isRouteListEditMode ? 'Exit Edit Mode' : 'Enter Edit Mode';
+    routeListEditModeBtn.classList.toggle('is-ready', isRouteListEditMode);
+  }
+
+  if (routeListEditHint) {
+    routeListEditHint.textContent = isRouteListEditMode
+      ? 'Edit mode active. You can change visibility and enabled flags.'
+      : 'Overview mode active. Click Enter Edit Mode to modify visibility and enabled flags.';
+  }
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, options);
+  if (response.status === 204) return null;
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(payload?.error || 'Request failed');
+  }
+
+  return payload;
+}
+
+function setVendingFeedback(element, message, color = '#5d645d') {
+  if (!element) return;
+  element.textContent = message;
+  element.style.color = color;
+}
+
+function resetVendingRouteInlineState() {
+  vendingRouteInlineMode = 'none';
+  vendingRouteInlineEditId = '';
+}
+
+function updateVendingRouteAddRowButtonState() {
+  if (!vendingRouteAddRowBtn) return;
+  vendingRouteAddRowBtn.disabled = vendingRouteInlineMode !== 'none';
+}
+
+function resetVendingLocationInlineState() {
+  vendingLocationInlineMode = 'none';
+  vendingLocationInlineEditId = '';
+}
+
+function updateVendingLocationAddRowButtonState() {
+  if (!vendingLocationAddRowBtn) return;
+  vendingLocationAddRowBtn.disabled = vendingLocationInlineMode !== 'none';
+}
+
+function resetVendingRouteLocationInlineState() {
+  vendingRouteLocationInlineMode = 'none';
+  vendingRouteLocationInlineEditId = '';
+}
+
+function updateVendingRouteLocationAddRowButtonState() {
+  if (!vendingRouteLocationAddRowBtn) return;
+  vendingRouteLocationAddRowBtn.disabled = vendingRouteLocationInlineMode !== 'none';
+}
+
+function renderVendingRouteOptions() {
+  if (!vendingRouteLocationRouteIdInput) return;
+
+  const options = ['<option value="">Select route</option>'].concat(
+    vendingRoutes.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.code)} - ${escapeHtml(item.name)}</option>`)
+  );
+  const current = vendingRouteLocationRouteIdInput.value;
+  vendingRouteLocationRouteIdInput.innerHTML = options.join('');
+  if (current && vendingRoutes.some((item) => String(item.id) === String(current))) {
+    vendingRouteLocationRouteIdInput.value = current;
+  }
+}
+
+function renderVendingLocationOptions() {
+  if (!vendingRouteLocationLocationIdInput) return;
+
+  const options = ['<option value="">Select location</option>'].concat(
+    vendingLocations.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`)
+  );
+  const current = vendingRouteLocationLocationIdInput.value;
+  vendingRouteLocationLocationIdInput.innerHTML = options.join('');
+  if (current && vendingLocations.some((item) => String(item.id) === String(current))) {
+    vendingRouteLocationLocationIdInput.value = current;
+  }
+}
+
+function renderVendingRoutesTable() {
+  if (!vendingRouteTableBody) return;
+
+  updateVendingRouteAddRowButtonState();
+
+  if (!vendingRoutes.length && vendingRouteInlineMode !== 'add') {
+    vendingRouteTableBody.innerHTML = '<tr><td colspan="6" class="muted">No route yet</td></tr>';
+    return;
+  }
+
+  const rows = [];
+
+  if (vendingRouteInlineMode === 'add') {
+    rows.push(`
+      <tr class="is-editing">
+        <td>#</td>
+        <td><input type="text" data-vending-route-input-id placeholder="Route ID" /></td>
+        <td><input type="text" data-vending-route-input-code placeholder="Code" /></td>
+        <td><input type="text" data-vending-route-input-name placeholder="Name" /></td>
+        <td><input type="text" data-vending-route-input-description placeholder="Description" /></td>
+        <td class="cell-action">
+          <button type="button" class="btn btn-primary btn-sm" data-vending-route-save-create>Save</button>
+          <button type="button" class="btn btn-outline btn-sm" data-vending-route-cancel-inline>Cancel</button>
+        </td>
+      </tr>
+    `);
+  }
+
+  vendingRoutes.forEach((item, index) => {
+    const isEditing = vendingRouteInlineMode === 'edit' && String(item.id) === vendingRouteInlineEditId;
+
+    if (isEditing) {
+      rows.push(`
+        <tr class="is-editing">
+          <td>${escapeHtml(String(index + 1))}</td>
+          <td>${escapeHtml(item.id)}</td>
+          <td><input type="text" data-vending-route-input-code value="${escapeHtml(item.code || '')}" placeholder="Code" /></td>
+          <td><input type="text" data-vending-route-input-name value="${escapeHtml(item.name || '')}" placeholder="Name" /></td>
+          <td><input type="text" data-vending-route-input-description value="${escapeHtml(item.description || '')}" placeholder="Description" /></td>
+          <td class="cell-action">
+            <button type="button" class="btn btn-primary btn-sm" data-vending-route-save-edit="${escapeHtml(item.id)}">Save</button>
+            <button type="button" class="btn btn-outline btn-sm" data-vending-route-cancel-inline>Cancel</button>
+          </td>
+        </tr>
+      `);
+      return;
+    }
+
+    rows.push(`
+      <tr>
+        <td>${escapeHtml(String(index + 1))}</td>
+        <td>${escapeHtml(item.id)}</td>
+        <td>${escapeHtml(item.code)}</td>
+        <td>${escapeHtml(item.name)}</td>
+        <td>${escapeHtml(item.description || '-')}</td>
+        <td class="cell-action">
+          <button type="button" class="btn btn-ghost btn-sm" data-vending-route-edit="${escapeHtml(item.id)}" ${vendingRouteInlineMode !== 'none' ? 'disabled' : ''}>Edit</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-vending-route-delete="${escapeHtml(item.id)}" ${vendingRouteInlineMode !== 'none' ? 'disabled' : ''}>Delete</button>
+        </td>
+      </tr>
+    `);
+  });
+
+  vendingRouteTableBody.innerHTML = rows.join('');
+}
+
+function renderVendingLocationsTable() {
+  if (!vendingLocationTableBody) return;
+
+  updateVendingLocationAddRowButtonState();
+
+  if (!vendingLocations.length && vendingLocationInlineMode !== 'add') {
+    vendingLocationTableBody.innerHTML = '<tr><td colspan="5" class="muted">No location yet</td></tr>';
+    return;
+  }
+
+  const rows = [];
+
+  if (vendingLocationInlineMode === 'add') {
+    rows.push(`
+      <tr class="is-editing">
+        <td>#</td>
+        <td><input type="text" data-vending-location-input-id placeholder="Location ID" /></td>
+        <td><input type="text" data-vending-location-input-name placeholder="Location name" /></td>
+        <td><input type="text" data-vending-location-input-delivery placeholder="Delivery" /></td>
+        <td class="cell-action">
+          <button type="button" class="btn btn-primary btn-sm" data-vending-location-save-create>Save</button>
+          <button type="button" class="btn btn-outline btn-sm" data-vending-location-cancel-inline>Cancel</button>
+        </td>
+      </tr>
+    `);
+  }
+
+  vendingLocations.forEach((item, index) => {
+    const isEditing = vendingLocationInlineMode === 'edit' && String(item.id) === vendingLocationInlineEditId;
+
+    if (isEditing) {
+      rows.push(`
+        <tr class="is-editing">
+          <td>${escapeHtml(String(index + 1))}</td>
+          <td>${escapeHtml(item.id)}</td>
+          <td><input type="text" data-vending-location-input-name value="${escapeHtml(item.name || '')}" placeholder="Location name" /></td>
+          <td><input type="text" data-vending-location-input-delivery value="${escapeHtml(item.address || '')}" placeholder="Delivery" /></td>
+          <td class="cell-action">
+            <button type="button" class="btn btn-primary btn-sm" data-vending-location-save-edit="${escapeHtml(item.id)}">Save</button>
+            <button type="button" class="btn btn-outline btn-sm" data-vending-location-cancel-inline>Cancel</button>
+          </td>
+        </tr>
+      `);
+      return;
+    }
+
+    rows.push(`
+      <tr>
+        <td>${escapeHtml(String(index + 1))}</td>
+        <td>${escapeHtml(item.id)}</td>
+        <td>${escapeHtml(item.name)}</td>
+        <td>${escapeHtml(item.address || '-')}</td>
+        <td class="cell-action">
+          <button type="button" class="btn btn-ghost btn-sm" data-vending-location-edit="${escapeHtml(item.id)}" ${vendingLocationInlineMode !== 'none' ? 'disabled' : ''}>Edit</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-vending-location-delete="${escapeHtml(item.id)}" ${vendingLocationInlineMode !== 'none' ? 'disabled' : ''}>Delete</button>
+        </td>
+      </tr>
+    `);
+  });
+
+  vendingLocationTableBody.innerHTML = rows.join('');
+}
+
+function renderVendingRouteLocationsTable() {
+  if (!vendingRouteLocationTableBody) return;
+
+  updateVendingRouteLocationAddRowButtonState();
+
+  if (!vendingRouteLocations.length && vendingRouteLocationInlineMode !== 'add') {
+    vendingRouteLocationTableBody.innerHTML = '<tr><td colspan="7" class="muted">No mapping yet</td></tr>';
+    return;
+  }
+
+  const rows = [];
+
+  if (vendingRouteLocationInlineMode === 'add') {
+    rows.push(`
+      <tr class="is-editing">
+        <td>#</td>
+        <td><input type="text" data-vending-route-location-input-id placeholder="Mapping ID" /></td>
+        <td><input type="text" data-vending-route-location-input-route-id placeholder="Route ID" /></td>
+        <td><input type="text" data-vending-route-location-input-location-id placeholder="Location ID" /></td>
+        <td><input type="number" min="1" step="1" value="1" data-vending-route-location-input-sequence /></td>
+        <td>
+          <select data-vending-route-location-input-status>
+            <option value="active">active</option>
+            <option value="inactive">inactive</option>
+          </select>
+        </td>
+        <td class="cell-action">
+          <button type="button" class="btn btn-primary btn-sm" data-vending-route-location-save-create>Save</button>
+          <button type="button" class="btn btn-outline btn-sm" data-vending-route-location-cancel-inline>Cancel</button>
+        </td>
+      </tr>
+    `);
+  }
+
+  vendingRouteLocations.forEach((item, index) => {
+    const isEditing = vendingRouteLocationInlineMode === 'edit' && String(item.id) === vendingRouteLocationInlineEditId;
+    const statusBadgeClass = String(item.status || '').toLowerCase() === 'inactive' ? 'badge-outline' : 'badge-success';
+
+    if (isEditing) {
+      rows.push(`
+        <tr class="is-editing">
+          <td>${escapeHtml(String(index + 1))}</td>
+          <td>${escapeHtml(item.id)}</td>
+          <td><input type="text" data-vending-route-location-input-route-id value="${escapeHtml(item.routeId || '')}" placeholder="Route ID" /></td>
+          <td><input type="text" data-vending-route-location-input-location-id value="${escapeHtml(item.locationId || '')}" placeholder="Location ID" /></td>
+          <td><input type="number" min="1" step="1" value="${escapeHtml(String(item.sequence || 1))}" data-vending-route-location-input-sequence /></td>
+          <td>
+            <select data-vending-route-location-input-status>
+              <option value="active" ${String(item.status || '').toLowerCase() !== 'inactive' ? 'selected' : ''}>active</option>
+              <option value="inactive" ${String(item.status || '').toLowerCase() === 'inactive' ? 'selected' : ''}>inactive</option>
+            </select>
+          </td>
+          <td class="cell-action">
+            <button type="button" class="btn btn-primary btn-sm" data-vending-route-location-save-edit="${escapeHtml(item.id)}">Save</button>
+            <button type="button" class="btn btn-outline btn-sm" data-vending-route-location-cancel-inline>Cancel</button>
+          </td>
+        </tr>
+      `);
+      return;
+    }
+
+    rows.push(`
+        <tr>
+          <td>${escapeHtml(String(index + 1))}</td>
+          <td>${escapeHtml(item.id)}</td>
+          <td>${escapeHtml(item.routeId || '-')}</td>
+          <td>${escapeHtml(item.locationId || '-')}</td>
+          <td>${escapeHtml(String(item.sequence || 1))}</td>
+          <td><span class="badge ${statusBadgeClass}">${escapeHtml(item.status || 'active')}</span></td>
+          <td class="cell-action">
+            <button type="button" class="btn btn-ghost btn-sm" data-vending-route-location-edit="${escapeHtml(item.id)}" ${vendingRouteLocationInlineMode !== 'none' ? 'disabled' : ''}>Edit</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-vending-route-location-delete="${escapeHtml(item.id)}" ${vendingRouteLocationInlineMode !== 'none' ? 'disabled' : ''}>Delete</button>
+          </td>
+        </tr>
+    `);
+  });
+
+  vendingRouteLocationTableBody.innerHTML = rows.join('');
+}
+
+async function loadVendingData() {
+  const [routesRes, locationsRes, routeLocationsRes] = await Promise.all([
+    requestJson('/api/vending/routes'),
+    requestJson('/api/vending/locations'),
+    requestJson('/api/vending/route-locations'),
+  ]);
+
+  vendingRoutes = Array.isArray(routesRes?.routes) ? routesRes.routes : [];
+  vendingLocations = Array.isArray(locationsRes?.locations) ? locationsRes.locations : [];
+  vendingRouteLocations = Array.isArray(routeLocationsRes?.routeLocations) ? routeLocationsRes.routeLocations : [];
+
+  renderVendingRouteOptions();
+  renderVendingLocationOptions();
+  renderVendingRoutesTable();
+  renderVendingLocationsTable();
+  renderVendingRouteLocationsTable();
+}
+
 function formatConnectedPhone(value) {
   const digits = String(value || '').replace(/\D+/g, '');
   if (!digits) return '-';
@@ -304,6 +735,110 @@ function formatConnectedPhone(value) {
   }
 
   return `+${digits}`;
+}
+
+function formatQrFreshnessLabel(updatedAtMs) {
+  if (!updatedAtMs) return 'Waiting for QR from WhatsApp...';
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - updatedAtMs) / 1000));
+  if (ageSeconds <= 3) return 'QR updated just now. Scan quickly before it refreshes.';
+  if (ageSeconds < 60) return `QR updated ${ageSeconds}s ago.`;
+  const minutes = Math.floor(ageSeconds / 60);
+  return `QR updated ${minutes}m ago. Tap Refresh QR if scan fails.`;
+}
+
+function getQrCountdownState(updatedAtMs) {
+  if (!updatedAtMs) {
+    return { secondsLeft: 0, isExpired: false };
+  }
+
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - updatedAtMs) / 1000));
+  const secondsLeft = Math.max(0, QR_ESTIMATED_TTL_SECONDS - ageSeconds);
+  return {
+    secondsLeft,
+    isExpired: secondsLeft === 0,
+  };
+}
+
+function renderQrCountdown(updatedAtMs) {
+  if (!waQrCountdown) return;
+
+  if (!updatedAtMs || isWhatsAppReady) {
+    waQrCountdown.hidden = true;
+    waQrCountdown.classList.remove('is-warning', 'is-expired');
+    waQrCountdown.textContent = '';
+    return;
+  }
+
+  const { secondsLeft, isExpired } = getQrCountdownState(updatedAtMs);
+  waQrCountdown.hidden = false;
+
+  if (isExpired) {
+    waQrCountdown.classList.add('is-expired');
+    waQrCountdown.classList.remove('is-warning');
+    waQrCountdown.textContent = 'QR may be expired';
+    return;
+  }
+
+  waQrCountdown.classList.remove('is-expired');
+  waQrCountdown.classList.toggle('is-warning', secondsLeft <= 7);
+  waQrCountdown.textContent = `Estimated refresh in ~${secondsLeft}s`;
+}
+
+async function performQrRefresh(options = {}) {
+  const silent = Boolean(options.silent);
+  const fromAuto = Boolean(options.fromAuto);
+  if (isWhatsAppReady || isRefreshingQr) return;
+
+  isRefreshingQr = true;
+  if (!fromAuto && refreshQrBtn) {
+    setButtonLoading(refreshQrBtn, true, 'Refreshing QR');
+  }
+  if (!silent && waQrMeta) {
+    waQrMeta.textContent = fromAuto ? 'Refreshing QR automatically...' : 'Refreshing QR state...';
+  }
+
+  try {
+    await refreshWhatsAppState();
+    if (!isWhatsAppReady && waQrMeta && lastQrUpdatedAt) {
+      waQrMeta.textContent = formatQrFreshnessLabel(lastQrUpdatedAt);
+    }
+  } finally {
+    isRefreshingQr = false;
+    if (!fromAuto && refreshQrBtn) {
+      setButtonLoading(refreshQrBtn, false);
+      refreshQrBtn.disabled = isWhatsAppReady;
+    }
+  }
+}
+
+function triggerQrAutoRefreshIfStale() {
+  if (!lastQrUpdatedAt || isWhatsAppReady || isRefreshingQr) return;
+
+  const { isExpired } = getQrCountdownState(lastQrUpdatedAt);
+  if (!isExpired) return;
+
+  const now = Date.now();
+  if (now - lastQrAutoRefreshAt < QR_AUTO_REFRESH_COOLDOWN_MS) return;
+
+  lastQrAutoRefreshAt = now;
+  performQrRefresh({ silent: false, fromAuto: true }).catch(() => {});
+}
+
+function stopQrMetaTicker() {
+  if (!qrMetaIntervalRef) return;
+  window.clearInterval(qrMetaIntervalRef);
+  qrMetaIntervalRef = null;
+}
+
+function startQrMetaTicker() {
+  if (qrMetaIntervalRef) return;
+  qrMetaIntervalRef = window.setInterval(() => {
+    if (waQrMeta && lastQrUpdatedAt) {
+      waQrMeta.textContent = formatQrFreshnessLabel(lastQrUpdatedAt);
+    }
+    renderQrCountdown(lastQrUpdatedAt);
+    triggerQrAutoRefreshIfStale();
+  }, 1000);
 }
 
 function setButtonLoading(button, isLoading, loadingLabel) {
@@ -1129,9 +1664,14 @@ async function copyTextToClipboard(value) {
 
 function setActiveNavItemByHash(hash) {
   if (!navItems.length) return;
+  let normalizedHash = String(hash || '');
+  if (normalizedHash.startsWith('#vending-mechine-')) {
+    normalizedHash = '#vending-mechine';
+  }
+
   navItems.forEach((item) => {
     const href = item.getAttribute('href') || '';
-    item.classList.toggle('active', href === hash);
+    item.classList.toggle('active', href === normalizedHash);
   });
 }
 
@@ -1292,38 +1832,68 @@ function renderWhatsAppState(state) {
 
   if (waQrWrap && waQrImage && waQrEmpty) {
     if (isReady) {
+      stopQrMetaTicker();
+      lastRenderedQrCodeDataUrl = '';
+      lastQrUpdatedAt = 0;
+      lastQrAutoRefreshAt = 0;
       waQrImage.removeAttribute('src');
       waQrImage.hidden = true;
       waQrWrap.hidden = false;
       waQrWrap.classList.add('is-connected');
       if (waQrConnectedBanner) waQrConnectedBanner.hidden = false;
       if (waQrInstructions) waQrInstructions.hidden = true;
+      if (waQrActions) waQrActions.hidden = true;
       waQrEmpty.hidden = true;
       if (waQrCaption) {
         waQrCaption.textContent = 'WhatsApp already connected. QR scan is not required.';
       }
+      if (waQrMeta) {
+        waQrMeta.textContent = 'Connected. QR login is disabled while session is active.';
+      }
+      renderQrCountdown(0);
     } else if (qrCodeDataUrl) {
-      waQrImage.src = qrCodeDataUrl;
+      if (lastRenderedQrCodeDataUrl !== qrCodeDataUrl) {
+        waQrImage.src = qrCodeDataUrl;
+        waQrImage.alt = 'Scan this WhatsApp QR code to connect';
+        lastRenderedQrCodeDataUrl = qrCodeDataUrl;
+        lastQrUpdatedAt = Date.now();
+        lastQrAutoRefreshAt = 0;
+      }
       waQrImage.hidden = false;
       waQrWrap.hidden = false;
       waQrWrap.classList.remove('is-connected');
       if (waQrConnectedBanner) waQrConnectedBanner.hidden = true;
       if (waQrInstructions) waQrInstructions.hidden = false;
+      if (waQrActions) waQrActions.hidden = false;
       waQrEmpty.hidden = true;
       if (waQrCaption) {
-        waQrCaption.textContent = 'Scan this QR code from WhatsApp to connect the bot.';
+        waQrCaption.textContent = 'Scan this QR code from WhatsApp to connect the bot. QR refreshes automatically.';
       }
+      if (waQrMeta) {
+        waQrMeta.textContent = formatQrFreshnessLabel(lastQrUpdatedAt);
+      }
+      renderQrCountdown(lastQrUpdatedAt);
+      startQrMetaTicker();
     } else {
+      stopQrMetaTicker();
+      lastRenderedQrCodeDataUrl = '';
+      lastQrUpdatedAt = 0;
+      lastQrAutoRefreshAt = 0;
       waQrImage.removeAttribute('src');
       waQrImage.hidden = true;
       waQrWrap.hidden = true;
       waQrWrap.classList.remove('is-connected');
       if (waQrConnectedBanner) waQrConnectedBanner.hidden = true;
       if (waQrInstructions) waQrInstructions.hidden = false;
+      if (waQrActions) waQrActions.hidden = false;
       waQrEmpty.hidden = false;
       if (waQrCaption) {
         waQrCaption.textContent = '';
       }
+      if (waQrMeta) {
+        waQrMeta.textContent = 'Waiting for QR from WhatsApp...';
+      }
+      renderQrCountdown(0);
     }
   }
 
@@ -1585,8 +2155,7 @@ if (scheduleTabList) {
 
 if (shareScheduleLinkBtn) {
   shareScheduleLinkBtn.addEventListener('click', async () => {
-    const baseUrl = `${window.location.origin}${window.location.pathname}`.replace(/\/$/, '');
-    const shareUrl = `${baseUrl}/schedule/create`;
+    const shareUrl = new URL('/schedule/create', window.location.origin).toString();
 
     setButtonLoading(shareScheduleLinkBtn, true, 'Copying share link');
     if (shareScheduleLinkFeedback) {
@@ -1791,6 +2360,12 @@ if (requestPairingBtn) {
       setButtonLoading(requestPairingBtn, false);
       requestPairingBtn.disabled = isWhatsAppReady;
     }
+  });
+}
+
+if (refreshQrBtn) {
+  refreshQrBtn.addEventListener('click', async () => {
+    await performQrRefresh({ silent: false, fromAuto: false });
   });
 }
 
@@ -2209,6 +2784,413 @@ if (sendMediaSourceTabs.length) {
 }
 
 updateSendMediaFlow();
+
+if (routeListEditModeBtn) {
+  routeListEditModeBtn.addEventListener('click', () => {
+    setRouteListEditMode(!isRouteListEditMode);
+  });
+}
+
+if (routeListSearchInput) {
+  routeListSearchInput.addEventListener('input', applyRouteListFilters);
+}
+
+if (routeListMethodFilter) {
+  routeListMethodFilter.addEventListener('change', applyRouteListFilters);
+}
+
+if (routeListTableBody) {
+  routeListTableBody.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    if (target.matches('[data-route-visibility], [data-route-enabled]')) {
+      updateRouteListOverview();
+    }
+  });
+
+  setRouteListEditMode(false);
+  applyRouteListFilters();
+}
+
+if (vendingRouteTableBody || vendingLocationTableBody || vendingRouteLocationTableBody) {
+  loadVendingData().catch((error) => {
+    setVendingFeedback(vendingRouteFeedback, error.message, '#b42318');
+    setVendingFeedback(vendingLocationFeedback, error.message, '#b42318');
+    setVendingFeedback(vendingRouteLocationFeedback, error.message, '#b42318');
+  });
+}
+
+if (vendingRouteAddRowBtn) {
+  vendingRouteAddRowBtn.addEventListener('click', () => {
+    vendingRouteInlineMode = 'add';
+    vendingRouteInlineEditId = '';
+    setVendingFeedback(vendingRouteFeedback, 'Add mode active. Fill row and click Save.');
+    renderVendingRoutesTable();
+  });
+}
+
+if (vendingRouteTableBody) {
+  vendingRouteTableBody.addEventListener('click', async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const cancelInlineBtn = target.closest('[data-vending-route-cancel-inline]');
+    if (cancelInlineBtn) {
+      resetVendingRouteInlineState();
+      setVendingFeedback(vendingRouteFeedback, '');
+      renderVendingRoutesTable();
+      return;
+    }
+
+    const saveCreateBtn = target.closest('[data-vending-route-save-create]');
+    if (saveCreateBtn) {
+      const row = saveCreateBtn.closest('tr');
+      const idInput = row?.querySelector('[data-vending-route-input-id]');
+      const codeInput = row?.querySelector('[data-vending-route-input-code]');
+      const nameInput = row?.querySelector('[data-vending-route-input-name]');
+      const descriptionInput = row?.querySelector('[data-vending-route-input-description]');
+      const payload = {
+        id: String(idInput?.value || '').trim(),
+        code: String(codeInput?.value || '').trim(),
+        name: String(nameInput?.value || '').trim(),
+        description: String(descriptionInput?.value || '').trim(),
+      };
+
+      if (!payload.id || !payload.code || !payload.name) {
+        setVendingFeedback(vendingRouteFeedback, 'Id, code and name are required.', '#b42318');
+        return;
+      }
+
+      setVendingFeedback(vendingRouteFeedback, 'Saving route...');
+      try {
+        await requestJson('/api/vending/routes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        resetVendingRouteInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingRouteFeedback, 'Route saved.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingRouteFeedback, error.message, '#b42318');
+      }
+      return;
+    }
+
+    const saveEditBtn = target.closest('[data-vending-route-save-edit]');
+    if (saveEditBtn) {
+      const id = String(saveEditBtn.getAttribute('data-vending-route-save-edit') || '').trim();
+      const row = saveEditBtn.closest('tr');
+      const codeInput = row?.querySelector('[data-vending-route-input-code]');
+      const nameInput = row?.querySelector('[data-vending-route-input-name]');
+      const descriptionInput = row?.querySelector('[data-vending-route-input-description]');
+      const payload = {
+        code: String(codeInput?.value || '').trim(),
+        name: String(nameInput?.value || '').trim(),
+        description: String(descriptionInput?.value || '').trim(),
+      };
+
+      if (!payload.code || !payload.name) {
+        setVendingFeedback(vendingRouteFeedback, 'Code and name are required.', '#b42318');
+        return;
+      }
+
+      setVendingFeedback(vendingRouteFeedback, 'Saving route...');
+      try {
+        await requestJson(`/api/vending/routes/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        resetVendingRouteInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingRouteFeedback, 'Route saved.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingRouteFeedback, error.message, '#b42318');
+      }
+      return;
+    }
+
+    const editBtn = target.closest('[data-vending-route-edit]');
+    if (editBtn) {
+      const id = String(editBtn.getAttribute('data-vending-route-edit') || '').trim();
+      const item = vendingRoutes.find((row) => String(row.id) === id);
+      if (!item) return;
+      vendingRouteInlineMode = 'edit';
+      vendingRouteInlineEditId = String(item.id);
+      setVendingFeedback(vendingRouteFeedback, 'Edit mode active. Update row and click Save.');
+      renderVendingRoutesTable();
+      return;
+    }
+
+    const deleteBtn = target.closest('[data-vending-route-delete]');
+    if (deleteBtn) {
+      const id = String(deleteBtn.getAttribute('data-vending-route-delete') || '').trim();
+      const confirmDelete = window.confirm('Delete this route?');
+      if (!confirmDelete) return;
+
+      try {
+        await requestJson(`/api/vending/routes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        resetVendingRouteInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingRouteFeedback, 'Route deleted.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingRouteFeedback, error.message, '#b42318');
+      }
+    }
+  });
+}
+
+if (vendingLocationAddRowBtn) {
+  vendingLocationAddRowBtn.addEventListener('click', () => {
+    vendingLocationInlineMode = 'add';
+    vendingLocationInlineEditId = '';
+    setVendingFeedback(vendingLocationFeedback, 'Add mode active. Fill row and click Save.');
+    renderVendingLocationsTable();
+  });
+}
+
+if (vendingLocationTableBody) {
+  vendingLocationTableBody.addEventListener('click', async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const cancelInlineBtn = target.closest('[data-vending-location-cancel-inline]');
+    if (cancelInlineBtn) {
+      resetVendingLocationInlineState();
+      setVendingFeedback(vendingLocationFeedback, '');
+      renderVendingLocationsTable();
+      return;
+    }
+
+    const saveCreateBtn = target.closest('[data-vending-location-save-create]');
+    if (saveCreateBtn) {
+      const row = saveCreateBtn.closest('tr');
+      const idInput = row?.querySelector('[data-vending-location-input-id]');
+      const nameInput = row?.querySelector('[data-vending-location-input-name]');
+      const deliveryInput = row?.querySelector('[data-vending-location-input-delivery]');
+      const payload = {
+        id: String(idInput?.value || '').trim(),
+        name: String(nameInput?.value || '').trim(),
+        address: String(deliveryInput?.value || '').trim(),
+        notes: '',
+      };
+
+      if (!payload.id || !payload.name) {
+        setVendingFeedback(vendingLocationFeedback, 'Id and name are required.', '#b42318');
+        return;
+      }
+
+      setVendingFeedback(vendingLocationFeedback, 'Saving location...');
+      try {
+        await requestJson('/api/vending/locations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        resetVendingLocationInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingLocationFeedback, 'Location saved.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingLocationFeedback, error.message, '#b42318');
+      }
+      return;
+    }
+
+    const saveEditBtn = target.closest('[data-vending-location-save-edit]');
+    if (saveEditBtn) {
+      const id = String(saveEditBtn.getAttribute('data-vending-location-save-edit') || '').trim();
+      const row = saveEditBtn.closest('tr');
+      const nameInput = row?.querySelector('[data-vending-location-input-name]');
+      const deliveryInput = row?.querySelector('[data-vending-location-input-delivery]');
+      const payload = {
+        name: String(nameInput?.value || '').trim(),
+        address: String(deliveryInput?.value || '').trim(),
+        notes: '',
+      };
+
+      if (!payload.name) {
+        setVendingFeedback(vendingLocationFeedback, 'Name is required.', '#b42318');
+        return;
+      }
+
+      setVendingFeedback(vendingLocationFeedback, 'Saving location...');
+      try {
+        await requestJson(`/api/vending/locations/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        resetVendingLocationInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingLocationFeedback, 'Location saved.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingLocationFeedback, error.message, '#b42318');
+      }
+      return;
+    }
+
+    const editBtn = target.closest('[data-vending-location-edit]');
+    if (editBtn) {
+      const id = String(editBtn.getAttribute('data-vending-location-edit') || '').trim();
+      const item = vendingLocations.find((row) => String(row.id) === id);
+      if (!item) return;
+      vendingLocationInlineMode = 'edit';
+      vendingLocationInlineEditId = String(item.id);
+      setVendingFeedback(vendingLocationFeedback, 'Edit mode active. Update row and click Save.');
+      renderVendingLocationsTable();
+      return;
+    }
+
+    const deleteBtn = target.closest('[data-vending-location-delete]');
+    if (deleteBtn) {
+      const id = String(deleteBtn.getAttribute('data-vending-location-delete') || '').trim();
+      const confirmDelete = window.confirm('Delete this location?');
+      if (!confirmDelete) return;
+
+      try {
+        await requestJson(`/api/vending/locations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        resetVendingLocationInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingLocationFeedback, 'Location deleted.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingLocationFeedback, error.message, '#b42318');
+      }
+    }
+  });
+}
+
+if (vendingRouteLocationAddRowBtn) {
+  vendingRouteLocationAddRowBtn.addEventListener('click', () => {
+    vendingRouteLocationInlineMode = 'add';
+    vendingRouteLocationInlineEditId = '';
+    setVendingFeedback(vendingRouteLocationFeedback, 'Add mode active. Fill row and click Save.');
+    renderVendingRouteLocationsTable();
+  });
+}
+
+if (vendingRouteLocationTableBody) {
+  vendingRouteLocationTableBody.addEventListener('click', async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const cancelInlineBtn = target.closest('[data-vending-route-location-cancel-inline]');
+    if (cancelInlineBtn) {
+      resetVendingRouteLocationInlineState();
+      setVendingFeedback(vendingRouteLocationFeedback, '');
+      renderVendingRouteLocationsTable();
+      return;
+    }
+
+    const saveCreateBtn = target.closest('[data-vending-route-location-save-create]');
+    if (saveCreateBtn) {
+      const row = saveCreateBtn.closest('tr');
+      const idInput = row?.querySelector('[data-vending-route-location-input-id]');
+      const routeIdInput = row?.querySelector('[data-vending-route-location-input-route-id]');
+      const locationIdInput = row?.querySelector('[data-vending-route-location-input-location-id]');
+      const sequenceInput = row?.querySelector('[data-vending-route-location-input-sequence]');
+      const statusInput = row?.querySelector('[data-vending-route-location-input-status]');
+      const payload = {
+        id: String(idInput?.value || '').trim(),
+        routeId: String(routeIdInput?.value || '').trim(),
+        locationId: String(locationIdInput?.value || '').trim(),
+        sequence: Number(sequenceInput?.value || 1),
+        status: String(statusInput?.value || 'active').trim(),
+      };
+
+      if (!payload.id || !payload.routeId || !payload.locationId) {
+        setVendingFeedback(vendingRouteLocationFeedback, 'Id, route id and location id are required.', '#b42318');
+        return;
+      }
+
+      setVendingFeedback(vendingRouteLocationFeedback, 'Saving route location...');
+      try {
+        await requestJson('/api/vending/route-locations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        resetVendingRouteLocationInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingRouteLocationFeedback, 'Route location saved.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingRouteLocationFeedback, error.message, '#b42318');
+      }
+      return;
+    }
+
+    const saveEditBtn = target.closest('[data-vending-route-location-save-edit]');
+    if (saveEditBtn) {
+      const id = String(saveEditBtn.getAttribute('data-vending-route-location-save-edit') || '').trim();
+      const row = saveEditBtn.closest('tr');
+      const routeIdInput = row?.querySelector('[data-vending-route-location-input-route-id]');
+      const locationIdInput = row?.querySelector('[data-vending-route-location-input-location-id]');
+      const sequenceInput = row?.querySelector('[data-vending-route-location-input-sequence]');
+      const statusInput = row?.querySelector('[data-vending-route-location-input-status]');
+      const payload = {
+        routeId: String(routeIdInput?.value || '').trim(),
+        locationId: String(locationIdInput?.value || '').trim(),
+        sequence: Number(sequenceInput?.value || 1),
+        status: String(statusInput?.value || 'active').trim(),
+      };
+
+      if (!payload.routeId || !payload.locationId) {
+        setVendingFeedback(vendingRouteLocationFeedback, 'Route id and location id are required.', '#b42318');
+        return;
+      }
+
+      setVendingFeedback(vendingRouteLocationFeedback, 'Saving route location...');
+      try {
+        await requestJson(`/api/vending/route-locations/${encodeURIComponent(id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+
+        resetVendingRouteLocationInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingRouteLocationFeedback, 'Route location saved.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingRouteLocationFeedback, error.message, '#b42318');
+      }
+      return;
+    }
+
+    const editBtn = target.closest('[data-vending-route-location-edit]');
+    if (editBtn) {
+      const id = String(editBtn.getAttribute('data-vending-route-location-edit') || '').trim();
+      const item = vendingRouteLocations.find((row) => String(row.id) === id);
+      if (!item) return;
+      vendingRouteLocationInlineMode = 'edit';
+      vendingRouteLocationInlineEditId = String(item.id);
+      setVendingFeedback(vendingRouteLocationFeedback, 'Edit mode active. Update row and click Save.');
+      renderVendingRouteLocationsTable();
+      return;
+    }
+
+    const deleteBtn = target.closest('[data-vending-route-location-delete]');
+    if (deleteBtn) {
+      const id = String(deleteBtn.getAttribute('data-vending-route-location-delete') || '').trim();
+      const confirmDelete = window.confirm('Delete this route location mapping?');
+      if (!confirmDelete) return;
+
+      try {
+        await requestJson(`/api/vending/route-locations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        resetVendingRouteLocationInlineState();
+        await loadVendingData();
+        setVendingFeedback(vendingRouteLocationFeedback, 'Route location deleted.', '#136f63');
+      } catch (error) {
+        setVendingFeedback(vendingRouteLocationFeedback, error.message, '#b42318');
+      }
+    }
+  });
+}
 
 refreshWhatsAppState();
 window.setInterval(refreshWhatsAppState, 5000);
@@ -2954,8 +3936,10 @@ function parseSingleSelectRowsInput(rawValue, fallbackTitle) {
   return [{ id: cleanValue, title: cleanTitle }];
 }
 
-function collectButtonsFromRows(targetRows = buttonRows) {
+function collectButtonsFromRows(targetRows = buttonRows, options = {}) {
   if (!targetRows) return [];
+
+  const allowEmptyUrl = Boolean(options && options.allowEmptyUrl);
 
   return Array.from(targetRows.querySelectorAll('.button-row'))
     .map((row) => {
@@ -2966,7 +3950,8 @@ function collectButtonsFromRows(targetRows = buttonRows) {
       const singleSelectHighlightLabelInput = row.querySelector('.single-select-highlight-label');
       const singleSelectRows = Array.from(row.querySelectorAll('.single-select-row-editor'));
       if (!label) return null;
-      if (type !== 'single_select' && !value) return null;
+      if (type !== 'single_select' && type !== 'cta_url' && !value) return null;
+      if (type === 'cta_url' && !allowEmptyUrl && !value) return null;
 
       let params = { display_text: label };
       if (type === 'cta_url') {
@@ -4251,7 +5236,7 @@ function addBuiltInEditorButtonRow(button = null) {
 }
 
 function collectBuiltInEditorButtons() {
-  return collectButtonsFromRows(builtInEditorButtonRows);
+  return collectButtonsFromRows(builtInEditorButtonRows, { allowEmptyUrl: true });
 }
 
 function closeBuiltInCommandModal() {
@@ -4507,10 +5492,32 @@ document.addEventListener('keydown', (event) => {
 });
 
 const clearDeletedMessagesBtn = document.getElementById('clearDeletedMessagesBtn');
+const deletedMessagesTableBody = document.getElementById('deleted-messages-table-body');
 
-document.querySelectorAll('.btn-delete-deleted-message').forEach((button) => {
-  button.addEventListener('click', async () => {
-    const id = button.dataset.id;
+async function readApiErrorMessage(response, fallbackMessage) {
+  try {
+    const data = await response.json();
+    return String(data?.error || '').trim() || fallbackMessage;
+  } catch (error) {
+    return fallbackMessage;
+  }
+}
+
+function hasDeletedMessageRows() {
+  if (!deletedMessagesTableBody) return false;
+  return Array.from(deletedMessagesTableBody.querySelectorAll('tr')).some(
+    (row) => row.dataset.id
+  );
+}
+
+if (deletedMessagesTableBody) {
+  deletedMessagesTableBody.addEventListener('click', async (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest('.btn-delete-deleted-message')
+      : null;
+    if (!button) return;
+
+    const id = String(button.getAttribute('data-id') || '').trim();
     if (!id) return;
 
     const confirmDelete = await askDestructiveConfirm({
@@ -4526,17 +5533,27 @@ document.querySelectorAll('.btn-delete-deleted-message').forEach((button) => {
       const response = await fetch(`/api/deleted-messages/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       });
+
       if (!response.ok && response.status !== 204) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to remove record');
+        const message = await readApiErrorMessage(response, 'Failed to remove record');
+        throw new Error(message);
       }
-      window.location.reload();
+
+      const row = button.closest('tr');
+      if (row) row.remove();
+      if (clearDeletedMessagesBtn) {
+        clearDeletedMessagesBtn.disabled = !hasDeletedMessageRows();
+      }
+
+      if (!hasDeletedMessageRows()) {
+        window.location.reload();
+      }
     } catch (error) {
       window.alert(error.message);
       setButtonLoading(button, false);
     }
   });
-});
+}
 
 if (clearDeletedMessagesBtn) {
   clearDeletedMessagesBtn.addEventListener('click', async () => {
@@ -4552,9 +5569,10 @@ if (clearDeletedMessagesBtn) {
     try {
       const response = await fetch('/api/deleted-messages', { method: 'DELETE' });
       if (!response.ok && response.status !== 204) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to clear records');
+        const message = await readApiErrorMessage(response, 'Failed to clear records');
+        throw new Error(message);
       }
+
       window.location.reload();
     } catch (error) {
       window.alert(error.message);

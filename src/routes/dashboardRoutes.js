@@ -9,6 +9,7 @@ const deletedMessageStore = require('../services/deletedMessageStore');
 const chatResponseSettingsStore = require('../services/chatResponseSettingsStore');
 const accessControlStore = require('../services/accessControlStore');
 const builtInCommandSettingsStore = require('../services/builtInCommandSettingsStore');
+const vendingStore = require('../services/vendingStore');
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 const uploadStorage = multer.diskStorage({
@@ -107,6 +108,107 @@ function createDashboardRouter(whatsappService) {
 
   router.get('/api/custom-commands', (req, res) => {
     return res.json({ commands: customCommandStore.listCommands() });
+  });
+
+  router.get('/api/vending/routes', (req, res) => {
+    return res.json({ routes: vendingStore.listRoutes() });
+  });
+
+  router.post('/api/vending/routes', (req, res) => {
+    try {
+      const created = vendingStore.createRoute(req.body || {});
+      return res.status(201).json(created);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.put('/api/vending/routes/:id', (req, res) => {
+    try {
+      const updated = vendingStore.updateRoute(req.params.id, req.body || {});
+      return res.json(updated);
+    } catch (error) {
+      const status = error.message === 'Route not found' ? 404 : 400;
+      return res.status(status).json({ error: error.message });
+    }
+  });
+
+  router.delete('/api/vending/routes/:id', (req, res) => {
+    try {
+      const removed = vendingStore.removeRoute(req.params.id);
+      if (!removed) {
+        return res.status(404).json({ error: 'Route not found' });
+      }
+      return res.status(204).send();
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.get('/api/vending/locations', (req, res) => {
+    return res.json({ locations: vendingStore.listLocations() });
+  });
+
+  router.post('/api/vending/locations', (req, res) => {
+    try {
+      const created = vendingStore.createLocation(req.body || {});
+      return res.status(201).json(created);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.put('/api/vending/locations/:id', (req, res) => {
+    try {
+      const updated = vendingStore.updateLocation(req.params.id, req.body || {});
+      return res.json(updated);
+    } catch (error) {
+      const status = error.message === 'Location not found' ? 404 : 400;
+      return res.status(status).json({ error: error.message });
+    }
+  });
+
+  router.delete('/api/vending/locations/:id', (req, res) => {
+    try {
+      const removed = vendingStore.removeLocation(req.params.id);
+      if (!removed) {
+        return res.status(404).json({ error: 'Location not found' });
+      }
+      return res.status(204).send();
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.get('/api/vending/route-locations', (req, res) => {
+    return res.json({ routeLocations: vendingStore.listRouteLocations() });
+  });
+
+  router.post('/api/vending/route-locations', (req, res) => {
+    try {
+      const created = vendingStore.createRouteLocation(req.body || {});
+      return res.status(201).json(created);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.put('/api/vending/route-locations/:id', (req, res) => {
+    try {
+      const updated = vendingStore.updateRouteLocation(req.params.id, req.body || {});
+      return res.json(updated);
+    } catch (error) {
+      const status = error.message === 'Route Location mapping not found' ? 404 : 400;
+      return res.status(status).json({ error: error.message });
+    }
+  });
+
+  router.delete('/api/vending/route-locations/:id', (req, res) => {
+    const removed = vendingStore.removeRouteLocation(req.params.id);
+    if (!removed) {
+      return res.status(404).json({ error: 'Route Location mapping not found' });
+    }
+    return res.status(204).send();
   });
 
   router.post('/api/custom-commands', (req, res) => {
