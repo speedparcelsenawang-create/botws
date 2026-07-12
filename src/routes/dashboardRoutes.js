@@ -1,0 +1,551 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const dayjs = require('dayjs');
+const multer = require('multer');
+const scheduleStore = require('../services/scheduleStore');
+const customCommandStore = require('../services/customCommandStore');
+const deletedMessageStore = require('../services/deletedMessageStore');
+const chatResponseSettingsStore = require('../services/chatResponseSettingsStore');
+const accessControlStore = require('../services/accessControlStore');
+const builtInCommandSettingsStore = require('../services/builtInCommandSettingsStore');
+
+const uploadDir = path.join(process.cwd(), 'uploads');
+const uploadStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    fs.mkdirSync(uploadDir, { recursive: true });
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const baseName = path
+      .basename(file.originalname || 'media', ext)
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-');
+    cb(null, `${Date.now()}-${baseName || 'media'}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
+
+function parseClientLocalDateTime(scheduleAt, timezoneOffsetMinutes) {
+  const raw = String(scheduleAt || '').trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const offset = Number.isFinite(Number(timezoneOffsetMinutes))
+    ? Number(timezoneOffsetMinutes)
+    : 0;
+
+  const utcMs = Date.UTC(year, month - 1, day, hour, minute) + (offset * 60 * 1000);
+  const parsed = dayjs(utcMs);
+
+  if (!parsed.isValid()) return null;
+  return parsed;
+}
+
+function createDashboardRouter(whatsappService) {
+  const router = express.Router();
+
+  async function getDashboardViewData() {
+    const schedules = await scheduleStore.listSchedules();
+    const waState = whatsappService.getConnectionState();
+    const scheduleStats = schedules.reduce(
+      (acc, item) => {
+        acc.total += 1;
+        if (item.status === 'pending') acc.pending += 1;
+        if (item.status === 'sent') acc.sent += 1;
+        if (item.status === 'failed') acc.failed += 1;
+        return acc;
+      },
+      { total: 0, pending: 0, sent: 0, failed: 0 }
+    );
+
+    const customCommands = customCommandStore.listCommands();
+    const deletedMessages = deletedMessageStore.listRecords();
+    const chatResponseSettings = chatResponseSettingsStore.getSettings();
+    const accessControlSettings = accessControlStore.getSettings();
+    const builtInCommandSettings = builtInCommandSettingsStore.getSettings();
+
+    return {
+      schedules,
+      waState,
+      scheduleStats,
+      dayjs,
+      customCommands,
+      commandCategories: customCommandStore.ALLOWED_CATEGORIES,
+      mediaTypes: customCommandStore.ALLOWED_MEDIA_TYPES,
+      deletedMessages,
+      chatResponseSettings,
+      accessControlSettings,
+      builtInCommandSettings,
+    };
+  }
+
+  router.get('/', async (req, res, next) => {
+    try {
+      const viewData = await getDashboardViewData();
+      res.render('dashboard', viewData);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/schedule/create', (req, res) => {
+    return res.render('schedule-share', {
+      mediaTypes: customCommandStore.ALLOWED_MEDIA_TYPES,
+    });
+  });
+
+  router.get('/api/custom-commands', (req, res) => {
+    return res.json({ commands: customCommandStore.listCommands() });
+  });
+
+  router.post('/api/custom-commands', (req, res) => {
+    try {
+      const created = customCommandStore.createCommand(req.body || {});
+      return res.status(201).json(created);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  router.post('/api/custom-commands/upload-media', upload.single('mediaFile'), (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const mediaType = String(req.body?.mediaType || '').trim();
+      const allowedMedia = new Set(customCommandStore.ALLOWED_MEDIA_TYPES);
+      if (!allowedMedia.has(mediaType)) {
+        return res.status(400).json({ error: 'Invalid media type for upload' });
+      }
+
+      const host = req.get('host');
+      const protocol = req.protocol || 'http';
+      const mediaUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+
+      return res.status(201).json({
+        mediaUrl,
+        fileName: req.file.originalname || req.file.filename,
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Failed to upload media file' });
+    }
+  });
+
+  router.put('/api/custom-commands/:trigger', (req, res) => {
+    try {
+      const updated = customCommandStore.updateCommand(req.params.trigger, req.body || {});
+      return res.json(updated);
+    } catch (error) {
+      const status = error.message === 'Command not found' ? 404 : 400;
+      return res.status(status).json({ error: error.message });
+    }
+  });
+
+  router.delete('/api/custom-commands/:trigger', (req, res) => {
+    const removed = customCommandStore.removeCommand(req.params.trigger);
+    if (!removed) {
+      return res.status(404).json({ error: 'Command not found' });
+    }
+    return res.status(204).send();
+  });
+
+  router.post('/api/schedules/upload-media', upload.single('mediaFile'), (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const mediaType = String(req.body?.mediaType || '').trim();
+      const allowedMedia = new Set(customCommandStore.ALLOWED_MEDIA_TYPES);
+      if (!allowedMedia.has(mediaType)) {
+        return res.status(400).json({ error: 'Invalid media type for upload' });
+      }
+
+      const host = req.get('host');
+      const protocol = req.protocol || 'http';
+      const mediaUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+
+      return res.status(201).json({
+        mediaUrl,
+        fileName: req.file.originalname || req.file.filename,
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Failed to upload media file' });
+    }
+  });
+
+  router.post('/api/messages/upload-media', upload.single('mediaFile'), (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const mediaType = String(req.body?.mediaType || '').trim();
+      const allowedMedia = new Set(customCommandStore.ALLOWED_MEDIA_TYPES);
+      if (!allowedMedia.has(mediaType)) {
+        return res.status(400).json({ error: 'Invalid media type for upload' });
+      }
+
+      const host = req.get('host');
+      const protocol = req.protocol || 'http';
+      const mediaUrl = `${protocol}://${host}/uploads/${req.file.filename}`;
+
+      return res.status(201).json({
+        mediaUrl,
+        fileName: req.file.originalname || req.file.filename,
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Failed to upload media file' });
+    }
+  });
+
+  router.post('/api/schedules', async (req, res, next) => {
+    try {
+      const {
+        targetType,
+        targetValue,
+        message,
+        scheduleAt,
+        timezoneOffsetMinutes,
+        repeatType,
+        repeatDays,
+        mediaType,
+        mediaUrl,
+        fileName,
+      } = req.body;
+      const normalizedTargetType =
+        targetType === 'personal-manual' || targetType === 'personal-chat' ? 'personal' : targetType;
+
+      if (!normalizedTargetType || !targetValue || !message || !scheduleAt) {
+        return res.status(400).json({
+          error: 'targetType, targetValue, message, and scheduleAt are required',
+        });
+      }
+
+      if (!['personal', 'group'].includes(normalizedTargetType)) {
+        return res.status(400).json({ error: 'targetType must be personal or group' });
+      }
+
+      const normalizedRepeatType = ['daily', 'weekly'].includes(repeatType) ? repeatType : 'none';
+      const normalizedRepeatDays = Array.isArray(repeatDays)
+        ? repeatDays.map((day) => Number(day)).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+        : [];
+
+      if (normalizedRepeatType === 'weekly' && !normalizedRepeatDays.length) {
+        return res.status(400).json({ error: 'Select at least one day for a weekly repeat schedule' });
+      }
+
+      const normalizedMediaType = String(mediaType || '').trim();
+      if (normalizedMediaType && normalizedMediaType !== 'none') {
+        const allowedMedia = new Set(customCommandStore.ALLOWED_MEDIA_TYPES);
+        if (!allowedMedia.has(normalizedMediaType)) {
+          return res.status(400).json({ error: 'Invalid media type' });
+        }
+        if (!String(mediaUrl || '').trim()) {
+          return res.status(400).json({ error: 'mediaUrl is required when mediaType is set' });
+        }
+      }
+
+      const parsed = parseClientLocalDateTime(scheduleAt, timezoneOffsetMinutes);
+      if (!parsed.isValid()) {
+        return res.status(400).json({
+          error: 'Invalid scheduleAt format',
+        });
+      }
+
+      const created = await scheduleStore.createSchedule({
+        targetType: normalizedTargetType,
+        targetValue,
+        message,
+        scheduleAt: parsed.toISOString(),
+        repeatType: normalizedRepeatType,
+        repeatDays: normalizedRepeatDays,
+        mediaType: normalizedMediaType,
+        mediaUrl: String(mediaUrl || '').trim(),
+        fileName: String(fileName || '').trim(),
+      });
+
+      return res.status(201).json(created);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post('/api/messages/send', async (req, res) => {
+    try {
+      const { targetType, targetValue, message, mediaType, mediaUrl, fileName } = req.body || {};
+      const normalizedTargetType =
+        targetType === 'personal-manual' || targetType === 'personal-chat' ? 'personal' : targetType;
+      const normalizedMessage = String(message || '').trim();
+      const normalizedMediaType = String(mediaType || '').trim();
+      const normalizedMediaUrl = String(mediaUrl || '').trim();
+      const normalizedFileName = String(fileName || '').trim();
+
+      if (!normalizedTargetType || !targetValue || (!normalizedMessage && !(normalizedMediaType && normalizedMediaType !== 'none' && normalizedMediaUrl))) {
+        return res.status(400).json({
+          error: 'targetType, targetValue, and either a message or media are required',
+        });
+      }
+
+      if (!['personal', 'group'].includes(normalizedTargetType)) {
+        return res.status(400).json({ error: 'targetType must be personal or group' });
+      }
+
+      const allowedMedia = new Set(customCommandStore.ALLOWED_MEDIA_TYPES);
+      if (normalizedMediaType && normalizedMediaType !== 'none' && !allowedMedia.has(normalizedMediaType)) {
+        return res.status(400).json({ error: 'Invalid media type' });
+      }
+
+      const media = normalizedMediaType && normalizedMediaType !== 'none' && normalizedMediaUrl
+        ? {
+            mediaType: normalizedMediaType,
+            mediaUrl: normalizedMediaUrl,
+            fileName: normalizedFileName || undefined,
+          }
+        : null;
+
+      await whatsappService.sendMessage(
+        normalizedTargetType,
+        String(targetValue).trim(),
+        normalizedMessage,
+        media
+      );
+
+      return res.status(200).json({ ok: true });
+    } catch (error) {
+      const status = error.message === 'WhatsApp client is not ready' ? 409 : 400;
+      return res.status(status).json({ error: error.message || 'Failed to send message' });
+    }
+  });
+
+  router.delete('/api/schedules/:id', async (req, res, next) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id)) {
+        return res.status(400).json({ error: 'Invalid ID' });
+      }
+
+      const deleted = await scheduleStore.removeSchedule(id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Schedule not found' });
+      }
+
+      return res.status(204).send();
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.get('/api/deleted-messages', (req, res) => {
+    return res.json({ messages: deletedMessageStore.listRecords() });
+  });
+
+  router.delete('/api/deleted-messages/:id', (req, res) => {
+    const removed = deletedMessageStore.removeRecord(req.params.id);
+    if (!removed) {
+      return res.status(404).json({ error: 'Record not found' });
+    }
+    return res.status(204).send();
+  });
+
+  router.delete('/api/deleted-messages', (req, res) => {
+    deletedMessageStore.clearRecords();
+    return res.status(204).send();
+  });
+
+  router.get('/api/whatsapp/groups', async (req, res, next) => {
+    try {
+      const groups = await whatsappService.listGroups();
+      return res.json({ groups });
+    } catch (error) {
+      if (error.message === 'WhatsApp client is not ready') {
+        return res.status(409).json({ error: error.message });
+      }
+      return next(error);
+    }
+  });
+
+  router.get('/api/whatsapp/personal-chats', async (req, res, next) => {
+    try {
+      const chats = await whatsappService.listPersonalChats();
+      return res.json({ chats });
+    } catch (error) {
+      if (error.message === 'WhatsApp client is not ready') {
+        return res.status(409).json({ error: error.message });
+      }
+      return next(error);
+    }
+  });
+
+  router.get('/api/whatsapp/state', (req, res) => {
+    const waState = whatsappService.getConnectionState();
+    return res.json(waState);
+  });
+
+  router.get('/api/chat-response-settings', (req, res) => {
+    return res.json(chatResponseSettingsStore.getSettings());
+  });
+
+  router.put('/api/chat-response-settings', (req, res) => {
+    try {
+      const payload = req.body || {};
+      const hasPersonal = Object.prototype.hasOwnProperty.call(payload, 'personalEnabled');
+      const hasGroup = Object.prototype.hasOwnProperty.call(payload, 'groupEnabled');
+      const hasSelfCommand = Object.prototype.hasOwnProperty.call(payload, 'selfCommandEnabled');
+
+      if (!hasPersonal && !hasGroup && !hasSelfCommand) {
+        return res.status(400).json({ error: 'personalEnabled, groupEnabled, or selfCommandEnabled is required' });
+      }
+
+      if (hasPersonal && typeof payload.personalEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'personalEnabled must be a boolean' });
+      }
+
+      if (hasGroup && typeof payload.groupEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'groupEnabled must be a boolean' });
+      }
+
+      if (hasSelfCommand && typeof payload.selfCommandEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'selfCommandEnabled must be a boolean' });
+      }
+
+      const updated = chatResponseSettingsStore.updateSettings(payload);
+      return res.json(updated);
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Failed to update chat response settings' });
+    }
+  });
+
+  router.get('/api/built-in-commands/sch-usage', (req, res) => {
+    const settings = builtInCommandSettingsStore.getSettings();
+    return res.json({
+      text: settings.scheduleUsageHelpText,
+      buttons: settings.scheduleUsageButtons,
+    });
+  });
+
+  router.get('/api/built-in-commands', (req, res) => {
+    const settings = builtInCommandSettingsStore.getSettings();
+    return res.json(settings);
+  });
+
+  router.put('/api/built-in-commands/sch-usage', (req, res) => {
+    try {
+      const payload = req.body || {};
+      const hasText = Object.prototype.hasOwnProperty.call(payload, 'text');
+      const hasButtons = Object.prototype.hasOwnProperty.call(payload, 'buttons');
+
+      if (!hasText && !hasButtons) {
+        return res.status(400).json({ error: 'text or buttons is required' });
+      }
+
+      const updated = builtInCommandSettingsStore.updateScheduleUsageSettings({
+        scheduleUsageHelpText: hasText ? payload.text : undefined,
+        scheduleUsageButtons: hasButtons ? payload.buttons : undefined,
+      });
+      return res.json({
+        text: updated.scheduleUsageHelpText,
+        buttons: updated.scheduleUsageButtons,
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Failed to update .sch usage text' });
+    }
+  });
+
+  router.put('/api/built-in-commands', (req, res) => {
+    try {
+      const payload = req.body || {};
+      const hasScheduleText = Object.prototype.hasOwnProperty.call(payload, 'scheduleUsageHelpText');
+      const hasScheduleButtons = Object.prototype.hasOwnProperty.call(payload, 'scheduleUsageButtons');
+      const hasScheduleListEmptyText = Object.prototype.hasOwnProperty.call(payload, 'scheduleListEmptyText');
+      const hasScheduleListButtons = Object.prototype.hasOwnProperty.call(payload, 'scheduleListButtons');
+      const hasScheduleDeleteUsageText = Object.prototype.hasOwnProperty.call(payload, 'scheduleDeleteUsageText');
+      const hasScheduleDeleteButtons = Object.prototype.hasOwnProperty.call(payload, 'scheduleDeleteButtons');
+      const hasVvText = Object.prototype.hasOwnProperty.call(payload, 'vvUsageHelpText');
+      const hasVvButtons = Object.prototype.hasOwnProperty.call(payload, 'vvUsageButtons');
+      const hasStickerText = Object.prototype.hasOwnProperty.call(payload, 'stickerUsageHelpText');
+      const hasStickerButtons = Object.prototype.hasOwnProperty.call(payload, 'stickerUsageButtons');
+
+      if (!hasScheduleText
+        && !hasScheduleButtons
+        && !hasScheduleListEmptyText
+        && !hasScheduleListButtons
+        && !hasScheduleDeleteUsageText
+        && !hasScheduleDeleteButtons
+        && !hasVvText
+        && !hasVvButtons
+        && !hasStickerText
+        && !hasStickerButtons) {
+        return res.status(400).json({ error: 'At least one built-in setting field is required' });
+      }
+
+      const updated = builtInCommandSettingsStore.updateSettings({
+        scheduleUsageHelpText: hasScheduleText ? payload.scheduleUsageHelpText : undefined,
+        scheduleUsageButtons: hasScheduleButtons ? payload.scheduleUsageButtons : undefined,
+        scheduleListEmptyText: hasScheduleListEmptyText ? payload.scheduleListEmptyText : undefined,
+        scheduleListButtons: hasScheduleListButtons ? payload.scheduleListButtons : undefined,
+        scheduleDeleteUsageText: hasScheduleDeleteUsageText ? payload.scheduleDeleteUsageText : undefined,
+        scheduleDeleteButtons: hasScheduleDeleteButtons ? payload.scheduleDeleteButtons : undefined,
+        vvUsageHelpText: hasVvText ? payload.vvUsageHelpText : undefined,
+        vvUsageButtons: hasVvButtons ? payload.vvUsageButtons : undefined,
+        stickerUsageHelpText: hasStickerText ? payload.stickerUsageHelpText : undefined,
+        stickerUsageButtons: hasStickerButtons ? payload.stickerUsageButtons : undefined,
+      });
+
+      return res.json(updated);
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Failed to update built-in command settings' });
+    }
+  });
+
+  router.get('/api/access-control-settings', (req, res) => {
+    return res.json(accessControlStore.getSettings());
+  });
+
+  router.put('/api/access-control-settings', (req, res) => {
+    try {
+      const payload = req.body || {};
+      const hasOwner = Object.prototype.hasOwnProperty.call(payload, 'ownerNumber');
+      const hasMode = Object.prototype.hasOwnProperty.call(payload, 'commandMode');
+
+      if (!hasOwner && !hasMode) {
+        return res.status(400).json({ error: 'ownerNumber or commandMode is required' });
+      }
+
+      if (hasMode && !['public', 'private'].includes(String(payload.commandMode || '').trim().toLowerCase())) {
+        return res.status(400).json({ error: 'commandMode must be public or private' });
+      }
+
+      const updated = accessControlStore.updateSettings(payload);
+      return res.json(updated);
+    } catch (error) {
+      return res.status(400).json({ error: error.message || 'Failed to update access control settings' });
+    }
+  });
+
+  router.post('/api/whatsapp/pairing-code', async (req, res) => {
+    try {
+      const { phoneNumber } = req.body || {};
+      const code = await whatsappService.requestPairingCode(phoneNumber);
+      return res.json({ code });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+  });
+
+  return router;
+}
+
+module.exports = createDashboardRouter;
